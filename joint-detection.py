@@ -2,10 +2,13 @@ from ultralytics import YOLO
 import logging
 import cv2
 import mediapipe as mp
+from collections import deque
+
 
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 # Load YOLOv8 pretrained model
 model = YOLO('yolov8n.pt')
+# racket_model = YOLO('best.pt')
 
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose()
@@ -14,7 +17,7 @@ mp_drawing = mp.solutions.drawing_utils
 # Open video
 cap = cv2.VideoCapture("shots-dataset/test.mp4")
 
-PADDING = 80  # number of pixels to expand around the detected box
+PADDING = 150  # number of pixels to expand around the detected box
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -23,9 +26,12 @@ while cap.isOpened():
 
     height, width, _ = frame.shape
     results = model(frame)[0]
+    # racket_results = racket_model(frame)[0]
 
     # Filter for 'person' detections only
     person_boxes = [box for box in results.boxes if int(box.cls[0]) == 0]
+    racket_boxes = [box for box in results.boxes if int(box.cls[0]) == 38]
+    ball_boxes = [box for box in results.boxes if int(box.cls[0]) == 32]
 
     if person_boxes:
         # Get the largest detected person
@@ -48,12 +54,29 @@ while cap.isOpened():
         # Run pose estimation
         results = pose.process(crop_rgb)
 
-        # Draw pose landmarks on the cropped image
-        # if results.pose_landmarks:
-        #    mp_drawing.draw_landmarks(player_crop, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        # Stroke analysis to find which stroke is being played
+        if results.pose_landmarks:
+            mp_drawing.draw_landmarks(player_crop, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            
+            # Draw tennis racket(s) on player_crop if detected
+            for box in racket_boxes:
+                largest_box = max(racket_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
+                x1r, y1r, x2r, y2r = map(int, largest_box.xyxy[0])
+
+                # Check if racket is within the player_crop bounds
+                if x1 <= x1r <= x2 and y1 <= y1r <= y2:
+                    # Adjust coordinates to the crop
+                    crop_x1r = x1r - x1
+                    crop_y1r = y1r - y1
+                    crop_x2r = x2r - x1
+                    crop_y2r = y2r - y1
+
+                    # Draw on player_crop
+                    cv2.rectangle(player_crop, (crop_x1r, crop_y1r), (crop_x2r, crop_y2r), (0, 0, 255), 2)
+                    cv2.putText(player_crop, "Racket", (crop_x1r, crop_y1r - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         # Show the pose overlay
-        # cv2.imshow("Pose on Player", player_crop)
+        cv2.imshow("Pose on Player", player_crop)
 
         if cv2.waitKey(10) & 0xFF == ord('q'):
             break
