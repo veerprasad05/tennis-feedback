@@ -4,7 +4,6 @@ import cv2
 import mediapipe as mp
 from collections import deque
 
-
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 # Load YOLOv8 pretrained model
 model = YOLO('yolov8n.pt')
@@ -19,6 +18,29 @@ cap = cv2.VideoCapture("shots-dataset/test.mp4")
 
 PADDING = 150  # number of pixels to expand around the detected box
 
+# ── NEW helper ─────────────────────────────────────────────────────────
+def print_and_highlight_right_arm(pose_landmarks, crop_img):
+    """
+    Print (x, y) pixel coords of right wrist, elbow, shoulder
+    and draw green circles on those points.
+    """
+    # MediaPipe landmark indices for the right arm
+    RIGHT_WRIST, RIGHT_ELBOW, RIGHT_SHOULDER = 16, 14, 12
+    indices = [RIGHT_WRIST, RIGHT_ELBOW, RIGHT_SHOULDER]
+    names   = ["Right wrist", "Right elbow", "Right shoulder"]
+
+    h, w = crop_img.shape[:2]
+
+    for idx, name in zip(indices, names):
+        lm   = pose_landmarks.landmark[idx]
+        x_px = int(lm.x * w)
+        y_px = int(lm.y * h)
+        print(f"{name} coords: {x_px}, {y_px}")
+        # draw a green filled circle
+        cv2.circle(crop_img, (x_px, y_px), 6, (0, 255, 0), -1)
+    print("new frame\n")
+# ───────────────────────────────────────────────────────────────────────
+
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
@@ -31,7 +53,6 @@ while cap.isOpened():
     # Filter for 'person' detections only
     person_boxes = [box for box in results.boxes if int(box.cls[0]) == 0]
     racket_boxes = [box for box in results.boxes if int(box.cls[0]) == 38]
-    ball_boxes = [box for box in results.boxes if int(box.cls[0]) == 32]
 
     if person_boxes:
         # Get the largest detected person
@@ -57,6 +78,7 @@ while cap.isOpened():
         # Stroke analysis to find which stroke is being played
         if results.pose_landmarks:
             mp_drawing.draw_landmarks(player_crop, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            print_and_highlight_right_arm(results.pose_landmarks, player_crop)
             
             # Draw tennis racket(s) on player_crop if detected
             for box in racket_boxes:
