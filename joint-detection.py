@@ -5,7 +5,7 @@ import mediapipe as mp
 from collections import deque
 
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
-# Load YOLOv8 pretrained model
+# Load YOLOv12 pretrained model
 model = YOLO('yolov8n.pt')
 # racket_model = YOLO('best.pt')
 
@@ -18,28 +18,50 @@ cap = cv2.VideoCapture("shots-dataset/test.mp4")
 
 PADDING = 150  # number of pixels to expand around the detected box
 
-# ── NEW helper ─────────────────────────────────────────────────────────
 def print_and_highlight_right_arm(pose_landmarks, crop_img):
     """
-    Print (x, y) pixel coords of right wrist, elbow, shoulder
-    and draw green circles on those points.
+    • Print (x, y) for right wrist, elbow, shoulder
+    • Draw green circles on those joints
+    • Draw:
+        1. Vertical line connecting shoulder-mid and hip-mid
+        2. Horizontal line at halfway-height between shoulder-mid and hip-mid
     """
-    # MediaPipe landmark indices for the right arm
-    RIGHT_WRIST, RIGHT_ELBOW, RIGHT_SHOULDER = 16, 14, 12
-    indices = [RIGHT_WRIST, RIGHT_ELBOW, RIGHT_SHOULDER]
-    names   = ["Right wrist", "Right elbow", "Right shoulder"]
-
     h, w = crop_img.shape[:2]
 
-    for idx, name in zip(indices, names):
+    # ── right-arm joints (MediaPipe indices) ──
+    RIGHT_WRIST, RIGHT_ELBOW, RIGHT_SHOULDER = 16, 14, 12
+    joints   = [RIGHT_WRIST, RIGHT_ELBOW, RIGHT_SHOULDER]
+    joint_nm = ["Right wrist", "Right elbow", "Right shoulder"]
+
+    for idx, name in zip(joints, joint_nm):
         lm   = pose_landmarks.landmark[idx]
         x_px = int(lm.x * w)
         y_px = int(lm.y * h)
         print(f"{name} coords: {x_px}, {y_px}")
-        # draw a green filled circle
-        cv2.circle(crop_img, (x_px, y_px), 6, (0, 255, 0), -1)
+        cv2.circle(crop_img, (x_px, y_px), 6, (0, 255, 0), -1)  # green
+
+    # ── shoulder & hip mid-points ──
+    L_SH, R_SH = 11, 12
+    L_HP, R_HP = 23, 24
+
+    sh_mid_x = int((pose_landmarks.landmark[L_SH].x +
+                    pose_landmarks.landmark[R_SH].x) * 0.5 * w)
+    sh_mid_y = int((pose_landmarks.landmark[L_SH].y +
+                    pose_landmarks.landmark[R_SH].y) * 0.5 * h)
+
+    hp_mid_x = int((pose_landmarks.landmark[L_HP].x +
+                    pose_landmarks.landmark[R_HP].x) * 0.5 * w)
+    hp_mid_y = int((pose_landmarks.landmark[L_HP].y +
+                    pose_landmarks.landmark[R_HP].y) * 0.5 * h)
+
+    # draw vertical line (cyan)
+    cv2.line(crop_img, (sh_mid_x, sh_mid_y), (hp_mid_x, hp_mid_y), (255, 255, 0), 2)
+
+    # halfway-height between shoulder-mid and hip-mid
+    mid_y = int((sh_mid_y + hp_mid_y) * 0.5)
+    cv2.line(crop_img, (0, mid_y), (w, mid_y), (255, 255, 0), 2)
+
     print("new frame\n")
-# ───────────────────────────────────────────────────────────────────────
 
 while cap.isOpened():
     ret, frame = cap.read()
