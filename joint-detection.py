@@ -14,9 +14,35 @@ pose = mp_pose.Pose()
 mp_drawing = mp.solutions.drawing_utils
 
 # Open video
-cap = cv2.VideoCapture("shots-dataset/test.mp4")
+cap = cv2.VideoCapture("shots-dataset/long_test_3.mp4")
 
 PADDING = 150  # number of pixels to expand around the detected box
+
+def find_shoulder_hip_mid_points(pose_landmarks, crop_img):
+    h, w = crop_img.shape[:2]
+    
+    # ── shoulder & hip mid-points ──
+    L_SH, R_SH = 11, 12
+    L_HP, R_HP = 23, 24
+
+    sh_mid_x = int((pose_landmarks.landmark[L_SH].x +
+                    pose_landmarks.landmark[R_SH].x) * 0.5 * w)
+    sh_mid_y = int((pose_landmarks.landmark[L_SH].y +
+                    pose_landmarks.landmark[R_SH].y) * 0.5 * h)
+
+    hp_mid_x = int((pose_landmarks.landmark[L_HP].x +
+                    pose_landmarks.landmark[R_HP].x) * 0.5 * w)
+    hp_mid_y = int((pose_landmarks.landmark[L_HP].y +
+                    pose_landmarks.landmark[R_HP].y) * 0.5 * h)
+    
+    # halfway-width between shoulder-mid and hip-mid
+    mid_x = int((sh_mid_x + hp_mid_x) * 0.5)
+    
+    # halfway-height between shoulder-mid and hip-mid
+    mid_y = int((sh_mid_y + hp_mid_y) * 0.5)
+
+    return mid_x, mid_y
+
 
 def print_and_highlight_right_arm(pose_landmarks, crop_img):
     """
@@ -40,25 +66,10 @@ def print_and_highlight_right_arm(pose_landmarks, crop_img):
         print(f"{name} coords: {x_px}, {y_px}")
         cv2.circle(crop_img, (x_px, y_px), 6, (0, 255, 0), -1)  # green
 
-    # ── shoulder & hip mid-points ──
-    L_SH, R_SH = 11, 12
-    L_HP, R_HP = 23, 24
+    mid_x, mid_y = find_shoulder_hip_mid_points(pose_landmarks, crop_img)
+    
+    cv2.line(crop_img, (mid_x, 0), (mid_x, h), (255, 255, 0), 2)
 
-    sh_mid_x = int((pose_landmarks.landmark[L_SH].x +
-                    pose_landmarks.landmark[R_SH].x) * 0.5 * w)
-    sh_mid_y = int((pose_landmarks.landmark[L_SH].y +
-                    pose_landmarks.landmark[R_SH].y) * 0.5 * h)
-
-    hp_mid_x = int((pose_landmarks.landmark[L_HP].x +
-                    pose_landmarks.landmark[R_HP].x) * 0.5 * w)
-    hp_mid_y = int((pose_landmarks.landmark[L_HP].y +
-                    pose_landmarks.landmark[R_HP].y) * 0.5 * h)
-
-    # draw vertical line (cyan)
-    cv2.line(crop_img, (sh_mid_x, sh_mid_y), (hp_mid_x, hp_mid_y), (255, 255, 0), 2)
-
-    # halfway-height between shoulder-mid and hip-mid
-    mid_y = int((sh_mid_y + hp_mid_y) * 0.5)
     cv2.line(crop_img, (0, mid_y), (w, mid_y), (255, 255, 0), 2)
 
     print("new frame\n")
