@@ -1,78 +1,18 @@
 from ultralytics import YOLO
 import logging
 import cv2
-import mediapipe as mp
-from collections import deque
 
+# Suppress YOLO logging
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
-# Load YOLOv12 pretrained model
-model = YOLO('yolov8n.pt')
-# racket_model = YOLO('best.pt')
 
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose()
-mp_drawing = mp.solutions.drawing_utils
+# Load YOLOv8 pretrained model
+model = YOLO('yolov8n.pt')
 
 # Open video
-cap = cv2.VideoCapture("shots-dataset/long_test_3.mp4")
+cap = cv2.VideoCapture("shots-dataset/test.mp4")
 
-PADDING = 150  # number of pixels to expand around the detected box
-
-def find_shoulder_hip_mid_points(pose_landmarks, crop_img):
-    h, w = crop_img.shape[:2]
-    
-    # ── shoulder & hip mid-points ──
-    L_SH, R_SH = 11, 12
-    L_HP, R_HP = 23, 24
-
-    sh_mid_x = int((pose_landmarks.landmark[L_SH].x +
-                    pose_landmarks.landmark[R_SH].x) * 0.5 * w)
-    sh_mid_y = int((pose_landmarks.landmark[L_SH].y +
-                    pose_landmarks.landmark[R_SH].y) * 0.5 * h)
-
-    hp_mid_x = int((pose_landmarks.landmark[L_HP].x +
-                    pose_landmarks.landmark[R_HP].x) * 0.5 * w)
-    hp_mid_y = int((pose_landmarks.landmark[L_HP].y +
-                    pose_landmarks.landmark[R_HP].y) * 0.5 * h)
-    
-    # halfway-width between shoulder-mid and hip-mid
-    mid_x = int((sh_mid_x + hp_mid_x) * 0.5)
-    
-    # halfway-height between shoulder-mid and hip-mid
-    mid_y = int((sh_mid_y + hp_mid_y) * 0.5)
-
-    return mid_x, mid_y
-
-
-def print_and_highlight_right_arm(pose_landmarks, crop_img):
-    """
-    • Print (x, y) for right wrist, elbow, shoulder
-    • Draw green circles on those joints
-    • Draw:
-        1. Vertical line connecting shoulder-mid and hip-mid
-        2. Horizontal line at halfway-height between shoulder-mid and hip-mid
-    """
-    h, w = crop_img.shape[:2]
-
-    # ── right-arm joints (MediaPipe indices) ──
-    RIGHT_WRIST, RIGHT_ELBOW, RIGHT_SHOULDER = 16, 14, 12
-    joints   = [RIGHT_WRIST, RIGHT_ELBOW, RIGHT_SHOULDER]
-    joint_nm = ["Right wrist", "Right elbow", "Right shoulder"]
-
-    for idx, name in zip(joints, joint_nm):
-        lm   = pose_landmarks.landmark[idx]
-        x_px = int(lm.x * w)
-        y_px = int(lm.y * h)
-        print(f"{name} coords: {x_px}, {y_px}")
-        cv2.circle(crop_img, (x_px, y_px), 6, (0, 255, 0), -1)  # green
-
-    mid_x, mid_y = find_shoulder_hip_mid_points(pose_landmarks, crop_img)
-    
-    cv2.line(crop_img, (mid_x, 0), (mid_x, h), (255, 255, 0), 2)
-
-    cv2.line(crop_img, (0, mid_y), (w, mid_y), (255, 255, 0), 2)
-
-    print("new frame\n")
+PADDING = 200  # number of pixels to expand around the detected box
+CROP_SIZE = 360  # target size for player crop (360x360)
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -81,57 +21,98 @@ while cap.isOpened():
 
     height, width, _ = frame.shape
     results = model(frame)[0]
-    # racket_results = racket_model(frame)[0]
 
-    # Filter for 'person' detections only
-    person_boxes = [box for box in results.boxes if int(box.cls[0]) == 0]
-    racket_boxes = [box for box in results.boxes if int(box.cls[0]) == 38]
+    # Filter detections by class
+    person_boxes = [box for box in results.boxes if int(box.cls[0]) == 0]  # person class
+    racket_boxes = [box for box in results.boxes if int(box.cls[0]) == 38]  # tennis racket class
+    ball_boxes = [box for box in results.boxes if int(box.cls[0]) == 32]  # sports ball class
+    
+    # Ball boxes (blue) - transform and scale coordinates
+    if ball_boxes:
+        x1b, y1b, x2b, y2b = map(int, ball_boxes[0].xyxy[0])
+        
+        # Check if ball is within the crop area
+        if (x1b < x2_padded and x2b > x1_padded and y1b < y2_padded and y2b > y1_padded):
+            # Transform to crop coordinates
+            ball_x1_crop = max(0, x1b - x1_padded)
+            ball_y1_crop = max(0, y1b - y1_padded)
+            ball_x2_crop = min(crop_width, x2b - x1_padded)
+            ball_y2_crop = min(crop_height, y2b - y1_padded)
+            
+            # Scale to resized dimensions
+            ball_x1_scaled = int(ball_x1_crop * scale_x)
+            ball_y1_scaled = int(ball_y1_crop * scale_y)
+            ball_x2_scaled = int(ball_x2_crop * scale_x)
+            ball_y2_scaled = int(ball_y2_crop * scale_y)
+            
+            cv2.rectangle(player_crop_resized, (ball_x1_scaled, ball_y1_scaled), (ball_x2_scaled, ball_y2_scaled), (255, 0, 0), 2)
+            cv2.putText(player_crop_resized, "Ball", (ball_x1_scaled, ball_y1_scaled - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
     if person_boxes:
-        # Get the largest detected person
-        largest_box = max(person_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
-        x1, y1, x2, y2 = map(int, largest_box.xyxy[0])
+        # Choose the person with the largest area
+        largest_person = max(person_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
+        x1, y1, x2, y2 = map(int, largest_person.xyxy[0])
 
-        # Add padding (but clamp to image size)
-        x1 = max(0, x1 - PADDING)
-        y1 = max(0, y1 - PADDING)
-        x2 = min(width, x2 + PADDING)
-        y2 = min(height, y2 + PADDING)
+        # Add padding (but clamp to image boundaries)
+        x1_padded = max(0, x1 - PADDING)
+        y1_padded = max(0, y1 - PADDING)
+        x2_padded = min(width, x2 + PADDING)
+        y2_padded = min(height, y2 + PADDING)
 
-        # Crop with padding
-        player_crop = frame[y1:y2, x1:x2]
-        # cv2.imshow("Padded Player Frame", player_crop)
+        # Crop the player with padding
+        player_crop = frame[y1_padded:y2_padded, x1_padded:x2_padded]
         
-        # Convert cropped image to RGB for MediaPipe
-        crop_rgb = cv2.cvtColor(player_crop, cv2.COLOR_BGR2RGB)
+        # Get original crop dimensions
+        crop_height, crop_width = player_crop.shape[:2]
+        
+        # Resize to 360x360 pixels
+        player_crop_resized = cv2.resize(player_crop, (CROP_SIZE, CROP_SIZE))
 
-        # Run pose estimation
-        results = pose.process(crop_rgb)
+        # Calculate scaling factors
+        scale_x = CROP_SIZE / crop_width
+        scale_y = CROP_SIZE / crop_height
 
-        # Stroke analysis to find which stroke is being played
-        if results.pose_landmarks:
-            mp_drawing.draw_landmarks(player_crop, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            print_and_highlight_right_arm(results.pose_landmarks, player_crop)
+        # Draw player box on resized crop (transform coordinates)
+        # Player box coordinates relative to the crop
+        player_x1_crop = max(0, x1 - x1_padded)
+        player_y1_crop = max(0, y1 - y1_padded)
+        player_x2_crop = min(crop_width, x2 - x1_padded)
+        player_y2_crop = min(crop_height, y2 - y1_padded)
+        
+        # Scale to resized dimensions
+        player_x1_scaled = int(player_x1_crop * scale_x)
+        player_y1_scaled = int(player_y1_crop * scale_y)
+        player_x2_scaled = int(player_x2_crop * scale_x)
+        player_y2_scaled = int(player_y2_crop * scale_y)
+        
+        cv2.rectangle(player_crop_resized, (player_x1_scaled, player_y1_scaled), (player_x2_scaled, player_y2_scaled), (0, 255, 0), 2)
+        cv2.putText(player_crop_resized, "Player", (player_x1_scaled, player_y1_scaled - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+        # Racket boxes (red) - transform and scale coordinates
+        if racket_boxes:
+            # Choose the person with the largest area
+            largest_racket = max(racket_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
+            x1r, y1r, x2r, y2r = map(int, largest_racket.xyxy[0])
             
-            # Draw tennis racket(s) on player_crop if detected
-            for box in racket_boxes:
-                largest_box = max(racket_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
-                x1r, y1r, x2r, y2r = map(int, largest_box.xyxy[0])
-
-                # Check if racket is within the player_crop bounds
-                if x1 <= x1r <= x2 and y1 <= y1r <= y2:
-                    # Adjust coordinates to the crop
-                    crop_x1r = x1r - x1
-                    crop_y1r = y1r - y1
-                    crop_x2r = x2r - x1
-                    crop_y2r = y2r - y1
-
-                    # Draw on player_crop
-                    cv2.rectangle(player_crop, (crop_x1r, crop_y1r), (crop_x2r, crop_y2r), (0, 0, 255), 2)
-                    cv2.putText(player_crop, "Racket", (crop_x1r, crop_y1r - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-        # Show the pose overlay
-        cv2.imshow("Pose on Player", player_crop)
+            # Check if racket is within the crop area
+            if (x1r < x2_padded and x2r > x1_padded and y1r < y2_padded and y2r > y1_padded):
+                # Transform to crop coordinates
+                racket_x1_crop = max(0, x1r - x1_padded)
+                racket_y1_crop = max(0, y1r - y1_padded)
+                racket_x2_crop = min(crop_width, x2r - x1_padded)
+                racket_y2_crop = min(crop_height, y2r - y1_padded)
+                
+                # Scale to resized dimensions
+                racket_x1_scaled = int(racket_x1_crop * scale_x)
+                racket_y1_scaled = int(racket_y1_crop * scale_y)
+                racket_x2_scaled = int(racket_x2_crop * scale_x)
+                racket_y2_scaled = int(racket_y2_crop * scale_y)
+                
+                cv2.rectangle(player_crop_resized, (racket_x1_scaled, racket_y1_scaled), (racket_x2_scaled, racket_y2_scaled), (0, 0, 255), 2)
+                cv2.putText(player_crop_resized, "Racket", (racket_x1_scaled, racket_y1_scaled - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        
+        # Display the cropped and resized player
+        cv2.imshow("Player Crop (360x360)", player_crop_resized)
 
         if cv2.waitKey(10) & 0xFF == ord('q'):
             break
