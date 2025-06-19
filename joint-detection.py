@@ -3,26 +3,17 @@ import logging
 import cv2
 import numpy as np
 import mediapipe as mp
+import gc
+import traceback
 
 # Suppress YOLO logging
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
-# Load YOLO model
-model = YOLO('yolov8n.pt')
-# ball_model = YOLO('best.pt')
+# Constants
+PADDING = 200
+CROP_SIZE = 640
 
-# Open video
-cap = cv2.VideoCapture("shots-dataset/test.mp4")
-
-PADDING = 200  # number of pixels to expand around the detected box
-CROP_SIZE = 640  # target size for player crop (640x640)
-
-def ready_position():
-    
-    return
-
-def crop_and_scale_position(crop_height, crop_width, x1, y1,x2, y2, x1_padded, y1_padded, scale_x, scale_y):
-    
+def crop_and_scale_position(crop_height, crop_width, x1, y1, x2, y2, x1_padded, y1_padded, scale_x, scale_y):
     x1_crop = max(0, x1 - x1_padded)
     y1_crop = max(0, y1 - y1_padded)
     x2_crop = min(crop_width, x2 - x1_padded)
@@ -35,93 +26,191 @@ def crop_and_scale_position(crop_height, crop_width, x1, y1,x2, y2, x1_padded, y
 
     return x1_scaled, y1_scaled, x2_scaled, y2_scaled
 
-while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret:
-        break
-
-    height, width, _ = frame.shape
-    results = model(frame)[0]
-    # ball_results = ball_model(frame)[0]
-
-    # Filter detections by class
-    person_boxes = [box for box in results.boxes if int(box.cls[0]) == 0]  # person class
-    racket_boxes = [box for box in results.boxes if int(box.cls[0]) == 38]  # tennis racket class
-    # ball_boxes = [box for box in ball_results.boxes if int(box.cls[0]) == 0] # ball class in trained model
+def main():
+    # Initialize resources
+    model = None
+    cap = None
     
-    # Use own-trained model for tennis ball detection tennis ball
-
-    if person_boxes:
-        # Choose the person with the largest area
-        largest_person = max(person_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
-        x1, y1, x2, y2 = map(int, largest_person.xyxy[0])
-
-        # Add padding (but clamp to image boundaries)
-        x1_padded = max(0, x1 - PADDING)
-        y1_padded = max(0, y1 - PADDING)
-        x2_padded = min(width, x2 + PADDING)
-        y2_padded = min(height, y2 + PADDING)
-
-        # Crop the player with padding
-        player_crop = frame[y1_padded:y2_padded, x1_padded:x2_padded]
+    try:
+        # Load YOLO model
+        model = YOLO('yolov8s.pt')
         
-        # Get original crop dimensions
-        crop_height, crop_width = player_crop.shape[:2]
+        # Open video
+        cap = cv2.VideoCapture("shots-dataset/test.mp4")
+        if not cap.isOpened():
+            raise ValueError("Could not open video file")
         
-        # Resize to 640x640 pixels
-        player_crop_resized = cv2.resize(player_crop, (CROP_SIZE, CROP_SIZE))
-
-        # Calculate scaling factors
-        scale_x = CROP_SIZE / crop_width
-        scale_y = CROP_SIZE / crop_height
-
-        # Draw player box on resized crop (transform coordinates)
-        player_x1_scaled, player_y1_scaled, player_x2_scaled, player_y2_scaled = crop_and_scale_position(crop_height, crop_width, x1, y1, x2, y2, x1_padded, y1_padded, scale_x, scale_y)
+        # Load mediapipe modules
+        mp_pose = mp.solutions.pose
+        mp_drawing = mp.solutions.drawing_utils
         
-        cv2.rectangle(player_crop_resized, (player_x1_scaled, player_y1_scaled), (player_x2_scaled, player_y2_scaled), (0, 255, 0), 2)
-        cv2.putText(player_crop_resized, "Player", (player_x1_scaled, player_y1_scaled - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        frame_count = 0
         
-        # Racket boxes (red) - transform and scale coordinates
-        if racket_boxes:
-            # Choose the racket with the largest area
-            largest_racket = max(racket_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
-            x1r, y1r, x2r, y2r = map(int, largest_racket.xyxy[0])
+        # Use MediaPipe context manager for proper cleanup
+        with mp_pose.Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            smooth_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        ) as pose:
             
-            # Check if racket is within the crop area
-            if (x1r < x2_padded and x2r > x1_padded and y1r < y2_padded and y2r > y1_padded):
-                # Transform to crop coordinates
-                racket_x1_scaled, racket_y1_scaled, racket_x2_scaled, racket_y2_scaled = crop_and_scale_position(crop_height, crop_width, x1r, y1r, x2r, y2r, x1_padded, y1_padded, scale_x, scale_y)
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    print("End of video or failed to read frame")
+                    break
                 
-                cv2.rectangle(player_crop_resized, (racket_x1_scaled, racket_y1_scaled), (racket_x2_scaled, racket_y2_scaled), (0, 0, 255), 2)
-                cv2.putText(player_crop_resized, "Racket", (racket_x1_scaled, racket_y1_scaled - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            else :
-                print("racket not detected")
+                frame_count += 1
                 
-        # Ball boxes using color detection (blue) - transform and scale coordinates
-        """ if ball_positions:
-            for (x1b, y1b, x2b, y2b) in ball_positions:
-                # Check if ball is within the crop area
-                if (x1b < x2_padded and x2b > x1_padded and y1b < y2_padded and y2b > y1_padded):
-                    # Transform to crop coordinates
-                    ball_x1_crop = max(0, x1b - x1_padded)
-                    ball_y1_crop = max(0, y1b - y1_padded)
-                    ball_x2_crop = min(crop_width, x2b - x1_padded)
-                    ball_y2_crop = min(crop_height, y2b - y1_padded)
+                try:
+                    # Process frame
+                    height, width, _ = frame.shape
+                    results = model(frame)[0]
                     
-                    # Scale to resized dimensions
-                    ball_x1_scaled = int(ball_x1_crop * scale_x)
-                    ball_y1_scaled = int(ball_y1_crop * scale_y)
-                    ball_x2_scaled = int(ball_x2_crop * scale_x)
-                    ball_y2_scaled = int(ball_y2_crop * scale_y)
+                    # Check if results.boxes exists and is not None
+                    if results.boxes is None or len(results.boxes) == 0:
+                        print(f"Frame {frame_count}: No detections")
+                        continue
                     
-                    cv2.rectangle(player_crop_resized, (ball_x1_scaled, ball_y1_scaled), (ball_x2_scaled, ball_y2_scaled), (255, 0, 0), 2)
-                    cv2.putText(player_crop_resized, "Ball", (ball_x1_scaled, ball_y1_scaled - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2) """
+                    # Filter detections by class
+                    person_boxes = [box for box in results.boxes if int(box.cls[0]) == 0]
+                    racket_boxes = [box for box in results.boxes if int(box.cls[0]) == 38]
+                    ball_boxes = [box for box in results.boxes if int(box.cls[0]) == 32]
+                    
+                    if not person_boxes:
+                        print(f"Frame {frame_count}: No person detected")
+                        continue
+                    
+                    # Choose the person with the largest area
+                    largest_person = max(person_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
+                    x1, y1, x2, y2 = map(int, largest_person.xyxy[0])
+                    
+                    # Add padding (but clamp to image boundaries)
+                    x1_padded = max(0, x1 - PADDING)
+                    y1_padded = max(0, y1 - PADDING)
+                    x2_padded = min(width, x2 + PADDING)
+                    y2_padded = min(height, y2 + PADDING)
+                    
+                    # Validate crop dimensions
+                    if y2_padded <= y1_padded or x2_padded <= x1_padded:
+                        print(f"Frame {frame_count}: Invalid crop dimensions")
+                        continue
+                    
+                    # Crop the player with padding
+                    player_crop = frame[y1_padded:y2_padded, x1_padded:x2_padded].copy()
+                    
+                    # Validate crop is not empty
+                    if player_crop.size == 0:
+                        print(f"Frame {frame_count}: Empty crop")
+                        continue
+                    
+                    # Get original crop dimensions
+                    crop_height, crop_width = player_crop.shape[:2]
+                    
+                    # Resize to 640x640 pixels
+                    player_crop_resized = cv2.resize(player_crop, (CROP_SIZE, CROP_SIZE))
+                    
+                    player_crop_resized_rgb = cv2.cvtColor(player_crop_resized, cv2.COLOR_BGR2RGB)
+                    pose_results = pose.process(player_crop_resized_rgb)
+                    
+                    if pose_results.pose_landmarks:
+                        mp_drawing.draw_landmarks(player_crop_resized, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                    
+                    # Calculate scaling factors
+                    scale_x = CROP_SIZE / crop_width
+                    scale_y = CROP_SIZE / crop_height
+                    
+                    # Draw player box on resized crop
+                    player_x1_scaled, player_y1_scaled, player_x2_scaled, player_y2_scaled = crop_and_scale_position(
+                        crop_height, crop_width, x1, y1, x2, y2, x1_padded, y1_padded, scale_x, scale_y
+                    )
+                    
+                    cv2.rectangle(player_crop_resized, (player_x1_scaled, player_y1_scaled), 
+                                (player_x2_scaled, player_y2_scaled), (0, 255, 0), 2)
+                    cv2.putText(player_crop_resized, "Player", (player_x1_scaled, player_y1_scaled - 10), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    
+                    # Process racket detection
+                    if racket_boxes:
+                        largest_racket = max(racket_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
+                        x1r, y1r, x2r, y2r = map(int, largest_racket.xyxy[0])
+                        
+                        if (x1r < x2_padded and x2r > x1_padded and y1r < y2_padded and y2r > y1_padded):
+                            racket_x1_scaled, racket_y1_scaled, racket_x2_scaled, racket_y2_scaled = crop_and_scale_position(
+                                crop_height, crop_width, x1r, y1r, x2r, y2r, x1_padded, y1_padded, scale_x, scale_y
+                            )
+                            
+                            cv2.rectangle(player_crop_resized, (racket_x1_scaled, racket_y1_scaled), 
+                                        (racket_x2_scaled, racket_y2_scaled), (0, 0, 255), 2)
+                            cv2.putText(player_crop_resized, "Racket", (racket_x1_scaled, racket_y1_scaled - 10), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    
+                    # Process ball detection
+                    if ball_boxes:
+                        largest_ball = max(ball_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
+                        x1b, y1b, x2b, y2b = map(int, largest_ball.xyxy[0])
+                        
+                        if (x1b < x2_padded and x2b > x1_padded and y1b < y2_padded and y2b > y1_padded):
+                            ball_x1_scaled, ball_y1_scaled, ball_x2_scaled, ball_y2_scaled = crop_and_scale_position(
+                                crop_height, crop_width, x1b, y1b, x2b, y2b, x1_padded, y1_padded, scale_x, scale_y
+                            )
+                            
+                            cv2.rectangle(player_crop_resized, (ball_x1_scaled, ball_y1_scaled), 
+                                        (ball_x2_scaled, ball_y2_scaled), (255, 0, 0), 2)
+                            cv2.putText(player_crop_resized, "Ball", (ball_x1_scaled, ball_y1_scaled - 10), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                    
+                    # Display the result
+                    cv2.imshow("Player Crop (640x640)", player_crop_resized)
+                    
+                    # Check for exit
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        print("Quit requested by user")
+                        break
+                    
+                except Exception as e:
+                    print(f"Error processing frame {frame_count}: {e}")
+                    traceback.print_exc()
+                    continue
+                
+                finally:
+                    # Clean up frame-specific variables
+                    if 'results' in locals():
+                        del results
+                    if 'player_crop' in locals():
+                        del player_crop
+                    if 'player_crop_resized' in locals():
+                        del player_crop_resized
+                    if 'player_crop_resized_rgb' in locals():
+                        del player_crop_resized_rgb
+                    if 'pose_results' in locals():
+                        del pose_results
+                    
+                    # Force garbage collection every 100 frames
+                    if frame_count % 100 == 0:
+                        gc.collect()
+                        print(f"Processed {frame_count} frames, garbage collected")
+    
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        traceback.print_exc()
+    
+    finally:
+        # Ensure cleanup happens
+        print("Cleaning up resources...")
         
-        # Display the cropped and resized player
-        cv2.imshow("Player Crop (640x640)", player_crop_resized)
+        if cap is not None:
+            cap.release()
+            print("Video capture released")
+        
+        cv2.destroyAllWindows()
+        print("OpenCV windows destroyed")
+        
+        # Final garbage collection
+        gc.collect()
+        print("Final cleanup completed")
 
-        if cv2.waitKey(10) & 0xFF == ord('q'):
-            break
-
-cap.release()
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()
