@@ -2,3 +2,4 @@
 *.webm
 *.pt
 *.jpg
+*pycache*
