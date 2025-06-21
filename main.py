@@ -6,8 +6,9 @@ import mediapipe as mp
 import gc
 import traceback
 
-from balldetector import TennisBallDetector
-from strokedetector import TennisStrokeDetector
+from ballDetector import TennisBallDetector
+from contactPointDetector import ContactPointDetector
+from readyPositionDetector import ReadyPositionDetector
 
 # Suppress YOLO logging
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
@@ -38,15 +39,22 @@ def main():
     try:
         print("Loading YOLO model...")
         # Load YOLO model for person and racket detection
-        model = YOLO('yolov8s.pt')
+        try:
+            model = YOLO('yolo11l')  # Try YOLOv11 first
+            print("✅ Loaded YOLOv11l")
+        except:
+            model = YOLO('yolov8s')  # Fallback to YOLOv8
+            print("⚠️  YOLOv11 failed, using YOLOv8s")
         
         print("Initializing tennis ball detector...")
         # Initialize the tennis ball detector with your custom model
-        # Change 'best.pt' to your actual model path, or set to None if you don't have one
         ball_detector = TennisBallDetector(custom_model_path='best.pt')
         
-        print("Initializing stroke detector...")
-        stroke_detector = TennisStrokeDetector(sequence_length=30)
+        print("Initializing contact point detector...")
+        contact_detector = ContactPointDetector(sequence_length=60)  # Renamed
+        
+        print("Initializing ready position detector...")
+        ready_position_detector = ReadyPositionDetector(sequence_length=60)  # New detector
         
         print("Opening video...")
         # Open video - change this to your video path
@@ -147,25 +155,6 @@ def main():
                             landmark_drawing_spec=mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2, circle_radius=2),
                             connection_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=2)
                         )
-                        
-                        # Add stroke detection
-                        racket_bbox = None
-                        if racket_boxes:
-                            largest_racket = max(racket_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
-                            racket_bbox = list(map(int, largest_racket.xyxy[0]))
-                        
-                        stroke_detector.add_frame_data(
-                            frame_count, 
-                            pose_results.pose_landmarks, 
-                            racket_bbox, 
-                            tennis_balls
-                        )
-                        
-                        # Display current stroke info
-                        if stroke_detector.stroke_phase != "idle":
-                            cv2.putText(player_crop_resized, 
-                                    f"Stroke: {stroke_detector.current_stroke or 'detecting...'} ({stroke_detector.stroke_phase})", 
-                                    (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
                     
                     # Calculate scaling factors
                     scale_x = CROP_SIZE / crop_width
@@ -181,6 +170,9 @@ def main():
                     cv2.putText(player_crop_resized, "Player", (player_x1_scaled, player_y1_scaled - 10), 
                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     
+                    # Initialize racket_bbox as None
+                    racket_bbox = None
+                    
                     # Process racket detection
                     if racket_boxes:
                         largest_racket = max(racket_boxes, key=lambda b: (b.xyxy[0][2] - b.xyxy[0][0]) * (b.xyxy[0][3] - b.xyxy[0][1]))
@@ -190,17 +182,17 @@ def main():
                             racket_x1_scaled, racket_y1_scaled, racket_x2_scaled, racket_y2_scaled = crop_and_scale_position(
                                 crop_height, crop_width, x1r, y1r, x2r, y2r, x1_padded, y1_padded, scale_x, scale_y
                             )
+                            racket_bbox = [racket_x1_scaled, racket_y1_scaled, racket_x2_scaled, racket_y2_scaled]
                             
                             cv2.rectangle(player_crop_resized, (racket_x1_scaled, racket_y1_scaled), 
                                         (racket_x2_scaled, racket_y2_scaled), (0, 0, 255), 2)
                             cv2.putText(player_crop_resized, "Racket", (racket_x1_scaled, racket_y1_scaled - 10), 
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                     
+                    cropped_tennis_balls = []
                     # Process improved ball detection results
                     for ball in tennis_balls:
                         x1b, y1b, x2b, y2b = ball['bbox']
-                        confidence = ball['weighted_confidence']
-                        method = ball['method']
                         
                         # Check if ball is within the crop area
                         if (x1b < x2_padded and x2b > x1_padded and y1b < y2_padded and y2b > y1_padded):
@@ -208,19 +200,32 @@ def main():
                                 crop_height, crop_width, x1b, y1b, x2b, y2b, x1_padded, y1_padded, scale_x, scale_y
                             )
                             
+                            cropped_ball = {
+                                'bbox': [ball_x1_scaled, ball_y1_scaled, ball_x2_scaled, ball_y2_scaled],
+                                'weighted_confidence': ball['weighted_confidence'],
+                                'method': ball['method']
+                            }
+                            cropped_tennis_balls.append(cropped_ball)
+                            
                             # Different colors based on detection method
                             method_colors = {
                                 'custom': (255, 0, 0),    # Blue for custom model
                                 'yolo': (0, 255, 255),    # Yellow for YOLO
                                 'color': (255, 0, 255)    # Magenta for color detection
                             }
-                            color = method_colors.get(method, (255, 0, 0))
+                            color = method_colors.get(ball['method'], (255, 0, 0))
                             
                             cv2.rectangle(player_crop_resized, (ball_x1_scaled, ball_y1_scaled), 
                                         (ball_x2_scaled, ball_y2_scaled), color, 2)
-                            cv2.putText(player_crop_resized, f"Ball ({method}): {confidence:.2f}", 
+                            cv2.putText(player_crop_resized, f"Ball ({ball['method']}): {ball['weighted_confidence']:.2f}", 
                                       (ball_x1_scaled, ball_y1_scaled - 10), 
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                    
+                    # Add frame data for contact detection
+                    contact_detector.add_frame_data(frame_count, racket_bbox, cropped_tennis_balls)
+                    
+                    # Add frame data for ready position detection
+                    ready_position_detector.add_frame_data(frame_count, pose_results.pose_landmarks)
                     
                     # Add detection statistics overlay
                     stats_text = f"Frame: {frame_count} | Balls detected: {len(tennis_balls)}"
@@ -233,6 +238,12 @@ def main():
                         methods_text = f"Methods: {', '.join(methods_used)}"
                         cv2.putText(player_crop_resized, methods_text, (10, 50), 
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                    
+                    # Add ready position indicator
+                    current_ready = ready_position_detector.current_ready_sequence
+                    if current_ready:
+                        cv2.putText(player_crop_resized, "READY POSITION", (10, 70), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     
                     # Display the result
                     cv2.imshow("Player Crop (640x640)", player_crop_resized)
@@ -261,12 +272,43 @@ def main():
                         gc.collect()
                         print(f"Processed {frame_count} frames, garbage collected")
         
-        # At the end, print stroke summary:
-        stroke_summary = stroke_detector.get_stroke_summary()
-        print("Stroke Analysis Summary:")
-        print(f"Total strokes detected: {stroke_summary['total_strokes']}")
-        for stroke in stroke_summary['strokes']:
-            print(f"{stroke['type']}: frames {stroke['start_frame']}-{stroke['end_frame']}")
+        # At the end of your program, print the results:
+        print("\n" + "="*70)
+        print("BALL-RACKET CONTACT DETECTION RESULTS")
+        print("="*70)
+        contact_detector.print_contact_results()
+        
+        # Get contact frame lists:
+        representative_contact_frames = contact_detector.get_frame_contact_list()
+        all_contact_frames = contact_detector.get_all_valid_contact_frames()
+
+        print(f"\nRepresentative contact frames: {representative_contact_frames}")
+        print(f"All valid contact frames: {all_contact_frames}")
+        
+        print("\n" + "="*70)
+        print("READY POSITION DETECTION RESULTS")
+        print("="*70)
+        ready_position_detector.print_ready_position_results()
+        
+        # Get ready position frame lists:
+        representative_ready_frames = ready_position_detector.get_frame_ready_position_list()
+        all_ready_frames = ready_position_detector.get_all_valid_ready_position_frames()
+
+        print(f"\nRepresentative ready position frames: {representative_ready_frames}")
+        print(f"All valid ready position frames: {all_ready_frames}")
+        
+        # Summary of both detections
+        print("\n" + "="*70)
+        print("COMBINED ANALYSIS SUMMARY")
+        print("="*70)
+        print(f"Total contact points detected: {len(representative_contact_frames)}")
+        print(f"Total ready position periods: {len(representative_ready_frames)}")
+        print(f"Total frames processed: {frame_count}")
+        
+        if representative_contact_frames and representative_ready_frames:
+            print("\nFrame Analysis:")
+            print(f"Contact frames: {representative_contact_frames}")
+            print(f"Ready position frames: {representative_ready_frames}")
     
     except Exception as e:
         print(f"Fatal error: {e}")
