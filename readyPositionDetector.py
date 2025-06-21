@@ -105,7 +105,7 @@ class ReadyPositionDetector:
         return features
     
     def detect_ready_position(self, pose_features):
-        """Detect if player is in ready position (both wrists within body polygon)"""
+        """Detect if player is in ready position (both wrists within extended body polygon)"""
         if not pose_features:
             return False
         
@@ -126,14 +126,31 @@ class ReadyPositionDetector:
         left_wrist = (pose_features['left_wrist']['x'], pose_features['left_wrist']['y'])
         right_wrist = (pose_features['right_wrist']['x'], pose_features['right_wrist']['y'])
         
-        # Create polygon from shoulders and hips
-        body_polygon = np.array([left_shoulder, right_shoulder, right_hip, left_hip], dtype=np.float32)
+        # Create extended polygon:
+        # - Bottom: vertical lines from shoulders down to hip y-level
+        # - Top: left_shoulder to right_shoulder (original positions)
+        left_hip_y = left_hip[1]
+        right_hip_y = right_hip[1]
+        left_shoulder_x, left_shoulder_y = left_shoulder
+        right_shoulder_x, right_shoulder_y = right_shoulder
         
-        # Check if both wrists are inside the polygon
-        left_wrist_inside = self.point_in_polygon(left_wrist, body_polygon)
-        right_wrist_inside = self.point_in_polygon(right_wrist, body_polygon)
+        # Create the four corners of the extended polygon
+        # Bottom left: left shoulder x-coordinate, left hip y coordinate
+        # Bottom right: right shoulder x-coordinate, right hip y coordinate  
+        # Top right: right shoulder
+        # Top left: left shoulder
+        extended_body_polygon = np.array([
+            (left_shoulder_x, left_hip_y),    # Top left: left shoulder x, left hip y
+            (right_shoulder_x, right_hip_y),  # Top right: right shoulder x, right hip y
+            (right_shoulder_x, right_shoulder_y),       # Bottom right: right shoulder
+            (left_shoulder_x, left_shoulder_y)          # Bottom left: left shoulder
+        ], dtype=np.float32)
         
-        # Ready position: both wrists are within the body polygon
+        # Check if both wrists are inside the extended polygon
+        left_wrist_inside = self.point_in_polygon(left_wrist, extended_body_polygon)
+        right_wrist_inside = self.point_in_polygon(right_wrist, extended_body_polygon)
+        
+        # Ready position: both wrists are within the extended body polygon
         return left_wrist_inside and right_wrist_inside
     
     def point_in_polygon(self, point, polygon):
